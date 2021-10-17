@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.18.1/full/pyodide.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.4.2.min.js"></script>
+</head>
+<body>
+    <pre id="code">
+    import sys
+    import matplotlib.pyplot as plt
+    import io, base64
+    from js import Plotly
+    from js import Blob, document
+    from js import window
+    import urllib.request as request
+    import numpy
+    import micropip
+    import csv
+    from dataclasses import dataclass
+    from datetime import datetime
+    from decimal import Decimal
+    from pprint import pprint
+    import pandas as pd
+    await micropip.install('snowballstemmer')
+    import snowballstemmer
+    stemmer = snowballstemmer.stemmer('english')
+    print(stemmer.stemWords('go goes going gone'.split()))
+    PERIOD = 90
+    dataX = []
+    dataY = []
+
+    @dataclass
+    class Bar:
+        date: datetime
+        price: Decimal
+        diff: Decimal = Decimal(0)
+        gain: Decimal = Decimal(0)
+        loss: Decimal = Decimal(0)
+        rs: Decimal = Decimal(0)
+        rsi: Decimal = Decimal(0)
+
+    date = []
+    params = []
+    pos = []
+    neg = []
+    bar_data = []
+    sum_poss = 0
+    sum_neg = 0
+    prev_avg_gain = 0
+    prev_avg_loss = 0
+    lines = window.content.splitlines()
+    render = csv.reader(lines)
+    parsed_csv = list(reader)
+    format = "%Y.%m.%d %H:%M:%S"
+
+    for item in parsed_csv
+        try:
+            row = item[0].split('\t')
+            dt = datetime.strptime(f'{row[0]} {row[1]}', '%Y.%m.%d %H:%M:%S')
+            bar_data.append(
+                    Bar(
+                        date=datetime.strptime(f'{row[0]} {row[1]}', '%Y.%m.%d %H:%M:%S'),
+                        price=Decimal(row[5])
+                    )
+                )
+        except ValueError
+            pass
+
+    pprint(len(bar_data));
+
+    for i, bar in enumerate(bar_data):
+        if i == 0:
+            continue
+        bar.diff = bar.price - bar_data[i - 1].price
+        bar.gain = bar.diff if bar.diff > 0 else Decimal(0)
+        bar.loss = abs(bar.diff) if bar.diff < 0 else Decimal(0)
+        if i < PERIOD - 1:
+            pos.append(bar.gain)
+            neg.append(bar.loss)
+            sum_poss += bar.gain
+            sum_neg += bar.loss
+        elif i == PERIOD - 1:
+            pprint(neg)
+            pprint(len(neg))
+            avg_gain = prev_avg_gain = sum_poss / PERIOD
+            avg_loss = prev_avg_loss = sum_neg / PERIOD
+        else:
+            avg_gain = (prev_avg_gain * (PERIOD -1) + bar.gain) / PERIOD
+            avg_loss = (prev_avg_loss * (PERIOD - 1) + bar.loss) / PERIOD
+            prev_avg_gain = avg_gain
+            prev_avg_loss = avg_loss
+            if avg_loss == 0:
+                if avg_gain != 0:
+                    bar.rsi = 100
+                else:
+                    bar.rsi = 50
+            else:
+                bar.rs = avg_gain / avg_loss
+                bar.rsi = round(100 - (100 / (1+bar.rs)), 2)
+        dataY.append(str(bar.rsi))
+        dataX.append(str(bar.date))
+    df = pd.DataFrame(dict(
+        x=[bar.date for bar in bar_data],
+        y=[bar.rsi for bar in bar_data]
+    ))
+    </pre>
+<input type="file" id="file">
+<button style="background: azure;" class="runCode">Run</button>
+<div id="graphJs" style="width:90%; height: 250px"></div>
+<div id="graph" style="width:90%; height: 250px"></div>
+<div id="graphRSI" style="width:90%; height: 250px"></div>
+<br/>
+<br/>
+<div>Output:</div>
+<textarea id="output" style="width: 100%;" rows="6" disabled></textarea>
+<script>
+    import rsi from './rsi.mjs'
+    window.content = null
+    let out = {}
+    const graph = document.getElementById("graph")
+    const graphJs = document.getElementById("graphJs")
+    const graphRSI = document.getElementById("graphRSI")
+    const output = document.getElementById("output")
+    const code = document.getElementById("code").textContent
+    const run = document.querySelector(".runCode")
+    let upload = document.getElementById("file")
+    run.disabled = true
+    run.style.background = "red"
+    upload.disabled = true
+    upload.style.background = "red"
+    let pyodide = await loadPyodide({ indexURL : "https://cdn.jsdelivr.net/pyodide/v0.18.1/full/" });
+
+    async function loadpackage() {
+        pyodide.loadPackage(["pandas","micropip","matplotlib","pytz","cycler"]);
+    }
+
+    function addToOutput(s) {
+        output.value = s;
+    }
+
+    loadPackage().then(() => {
+        async function evaluatePython() {
+            try {
+                window.location.file = ''
+                run.disabled = true
+                run.style.background = "red"
+                output.value = ''
+                await pyodide.runPythonAsync(code)
+                addToOutput('success')
+                run.disabled = false
+                run.style.background = "green"
+                let parsed_csv = pyodide.globals.get('parsed_csv').toJs()
+                let y = pyodide.globals.get('dataY').toJs()
+                let x = pyodide.globals.get('dataX').toJs()
+                await rsi(parsed_csv,graphJs, graphRSI)
+
+                let layout = {
+                   autorange: true
+                   yaxis: {range:[0, 100]},
+                   type: 'linear'
+                }
+                Plotly.newPlot( graph,[{
+                    x: x,
+                    y: y
+                }], layout, {showSendToCloud: true})
+            } catch (err) {
+                addToOutput(err)
+            }
+        }
+        function uploadFile() {
+            let file = document.getElementById("file").files[0];
+            let reader = new FileReader();
+            reader.readAsBinaryString(file);
+            reader.onload = evt => {
+                window.content = evt.target.result;
+                run.click()
+            }
+        }
+        upload.addEventListener('change', uploadFile)
+        run.addEventListener('click', evaluatePython)
+        run.disabled = false
+        run.style.background = "green"
+        upload.disabled = false
+        upload.style.background = "green"
+        loadScript()
+    })
+</script>
+</body>
+</html>
